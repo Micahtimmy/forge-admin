@@ -1,7 +1,7 @@
 /**
  * Admin API Client
  * All API calls to the main app's admin routes
- * Supports demo mode with persistent state for testing
+ * Supports demo mode with shared state synced via main app's /api/demo/state
  */
 
 import {
@@ -23,16 +23,43 @@ import {
   updateLicensing,
   forceJiraSync,
   disconnectJira,
-  resetDemoState,
+  resetDemoState as resetLocalDemoState,
   exportDemoStateForClient,
 } from "./demo-store";
 
+import {
+  sharedOrganizationsApi,
+  sharedUsersApi,
+  sharedLicensingApi,
+  sharedFeatureFlagsApi,
+  sharedJiraApi,
+  sharedAuditApi,
+  sharedStatsApi,
+  resetDemoState as resetSharedDemoState,
+} from "./shared-demo-api";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
 
-// Demo mode toggle - set via localStorage or env
-let demoMode = typeof window !== "undefined"
-  ? localStorage.getItem("admin_demo_mode") === "true"
-  : false;
+// Demo mode toggle - set via localStorage, env, or URL param
+let demoMode = false;
+if (typeof window !== "undefined") {
+  // Check URL params first (for dedicated demo deployment)
+  const urlParams = new URLSearchParams(window.location.search);
+  const urlDemo = urlParams.get("demo");
+
+  // Check env var for dedicated demo deployment
+  const envDemo = process.env.NEXT_PUBLIC_DEMO_MODE === "true";
+
+  // Check localStorage
+  const storedDemo = localStorage.getItem("admin_demo_mode") === "true";
+
+  demoMode = urlDemo === "true" || envDemo || storedDemo;
+
+  // Persist if set via URL
+  if (urlDemo === "true") {
+    localStorage.setItem("admin_demo_mode", "true");
+  }
+}
 
 export function setDemoMode(enabled: boolean) {
   demoMode = enabled;
@@ -42,10 +69,22 @@ export function setDemoMode(enabled: boolean) {
 }
 
 export function isDemoMode() {
+  // Also check env for server-side
+  if (process.env.NEXT_PUBLIC_DEMO_MODE === "true") return true;
   return demoMode;
 }
 
-export { resetDemoState, exportDemoStateForClient };
+// Reset both local and shared demo state
+export async function resetDemoState() {
+  resetLocalDemoState();
+  try {
+    await resetSharedDemoState();
+  } catch (e) {
+    console.warn("Failed to reset shared demo state:", e);
+  }
+}
+
+export { exportDemoStateForClient };
 
 interface ApiResponse<T> {
   success: boolean;
@@ -81,7 +120,7 @@ async function fetchApi<T>(
 // Simulate network delay for demo mode
 const demoDelay = () => new Promise((resolve) => setTimeout(resolve, 300 + Math.random() * 200));
 
-// Organizations
+// Organizations - Use shared demo API for synced state
 export const organizationsApi = {
   list: async (params?: {
     status?: string;
@@ -90,25 +129,9 @@ export const organizationsApi = {
     limit?: number;
     offset?: number;
   }) => {
-    if (demoMode) {
-      await demoDelay();
-      const state = loadDemoState();
-      let orgs = [...state.organizations];
-      if (params?.status) orgs = orgs.filter((o) => o.status === params.status);
-      if (params?.plan) orgs = orgs.filter((o) => o.plan === params.plan);
-      if (params?.search) {
-        const search = params.search.toLowerCase();
-        orgs = orgs.filter(
-          (o) =>
-            o.name.toLowerCase().includes(search) ||
-            o.slug.toLowerCase().includes(search)
-        );
-      }
-      const total = orgs.length;
-      const offset = params?.offset || 0;
-      const limit = params?.limit || 20;
-      orgs = orgs.slice(offset, offset + limit);
-      return { organizations: orgs, total };
+    // Use shared demo API for synced state with main app
+    if (isDemoMode()) {
+      return sharedOrganizationsApi.list(params);
     }
 
     const searchParams = new URLSearchParams();
@@ -135,52 +158,8 @@ export const organizationsApi = {
   },
 
   create: async (data: CreateOrganizationInput) => {
-    if (demoMode) {
-      await demoDelay();
-      const newOrg: OrganizationWithDetails = {
-        id: `org-${Date.now()}`,
-        name: data.name,
-        slug: data.slug || data.name.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, ""),
-        plan: data.plan || "free",
-        status: "active",
-        settings: {},
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        workspaces: data.createDefaultWorkspace !== false ? [
-          { id: `ws-${Date.now()}`, name: "Default Workspace", memberCount: 1 }
-        ] : [],
-        subscription: {
-          plan: data.plan || "free",
-          status: "active",
-          seatsTotal: data.plan === "enterprise" ? 100 : data.plan === "pro" ? 25 : 5,
-          seatsUsed: 1,
-        },
-      };
-
-      addOrganization(newOrg);
-
-      // Also create the owner user
-      const ownerUser: UserWithMembership = {
-        id: `user-${Date.now()}`,
-        email: data.ownerEmail,
-        fullName: data.ownerEmail.split("@")[0].replace(/[._]/g, " ").replace(/\b\w/g, l => l.toUpperCase()),
-        displayName: null,
-        avatarUrl: null,
-        isAdmin: false,
-        workspaceId: newOrg.workspaces[0]?.id || null,
-        createdAt: new Date().toISOString(),
-        membership: {
-          id: `mem-${Date.now()}`,
-          role: "owner",
-          status: "active",
-          joinedAt: new Date().toISOString(),
-        },
-        identities: [],
-      };
-
-      addUser(ownerUser);
-
-      return { organization: newOrg, workspaceId: newOrg.workspaces[0]?.id };
+    if (isDemoMode()) {
+      return sharedOrganizationsApi.create(data);
     }
     return fetchApi<{ organization: Organization; workspaceId?: string }>(
       "/organizations",
@@ -189,11 +168,8 @@ export const organizationsApi = {
   },
 
   update: async (orgId: string, data: UpdateOrganizationInput) => {
-    if (demoMode) {
-      await demoDelay();
-      const updated = updateOrganization(orgId, data);
-      if (!updated) throw new Error("Organization not found");
-      return { organization: updated };
+    if (isDemoMode()) {
+      return sharedOrganizationsApi.update(orgId, data);
     }
     return fetchApi<{ organization: Organization }>(`/organizations/${orgId}`, {
       method: "PATCH",
@@ -202,22 +178,15 @@ export const organizationsApi = {
   },
 
   deactivate: async (orgId: string) => {
-    if (demoMode) {
-      await demoDelay();
-      updateOrganization(orgId, { status: "deactivated" });
-      return { message: "Organization deactivated" };
+    if (isDemoMode()) {
+      return sharedOrganizationsApi.deactivate(orgId);
     }
     return fetchApi<{ message: string }>(`/organizations/${orgId}`, { method: "DELETE" });
   },
 
   suspend: async (orgId: string, reason?: string) => {
-    if (demoMode) {
-      await demoDelay();
-      updateOrganization(orgId, {
-        status: "suspended",
-        settings: { suspendReason: reason, suspendedAt: new Date().toISOString() }
-      });
-      return { message: "Organization suspended" };
+    if (isDemoMode()) {
+      return sharedOrganizationsApi.suspend(orgId, reason);
     }
     return fetchApi<{ message: string }>(`/organizations/${orgId}/suspend`, {
       method: "POST",
@@ -226,9 +195,8 @@ export const organizationsApi = {
   },
 
   reactivate: async (orgId: string) => {
-    if (demoMode) {
-      await demoDelay();
-      updateOrganization(orgId, { status: "active" });
+    if (isDemoMode()) {
+      return sharedOrganizationsApi.reactivate(orgId);
       return { message: "Organization reactivated" };
     }
     return fetchApi<{ message: string }>(`/organizations/${orgId}/reactivate`, {
