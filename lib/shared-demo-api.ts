@@ -194,6 +194,7 @@ interface ActionResponse {
   organization?: OrganizationData;
   user?: UserData;
   featureFlag?: FeatureFlagData;
+  featureFlags?: FeatureFlagData[];
   message?: string;
 }
 
