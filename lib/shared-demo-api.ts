@@ -188,8 +188,17 @@ export async function fetchDemoState(forceRefresh = false): Promise<DemoState> {
   }
 }
 
+// Response types for different actions
+interface ActionResponse {
+  state?: DemoState;
+  organization?: OrganizationData;
+  user?: UserData;
+  featureFlag?: FeatureFlagData;
+  message?: string;
+}
+
 // Post action to main app's demo state API
-async function postDemoAction(action: string, data: Record<string, unknown> = {}): Promise<DemoState> {
+async function postDemoAction(action: string, data: Record<string, unknown> = {}): Promise<ActionResponse> {
   const response = await fetch(DEMO_STATE_API, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -211,7 +220,7 @@ async function postDemoAction(action: string, data: Record<string, unknown> = {}
     cachedState = null;
   }
 
-  return result.data;
+  return result.data as ActionResponse;
 }
 
 // Reset demo state
@@ -345,7 +354,7 @@ export const sharedOrganizationsApi = {
   update: async (orgId: string, updates: Partial<OrganizationData>) => {
     await demoDelay();
     const result = await postDemoAction("updateOrganization", { orgId, updates });
-    return { organization: result.organization };
+    return { organization: result.organization! };
   },
 
   suspend: async (orgId: string, reason?: string) => {
